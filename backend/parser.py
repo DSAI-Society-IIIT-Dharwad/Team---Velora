@@ -367,9 +367,11 @@ def parse_yaml(content: bytes) -> dict:
         elif n["type"] == "rbac":
             for other in nodes:
                 if other["type"] == "serviceaccount":
+                    # Edge goes SA → RBAC so BFS from SA can reach the role
                     edges.append({
-                        "source": n["id"],
-                        "target": other["id"],
+                        "source": other["id"],
+                        "target": n["id"],
+                        "relationship": "bound-to",
                         "weight": (n["risk"] + other["risk"]) / 2,
                     })
 

@@ -111,35 +111,68 @@ def calculate_blast_radius(graph_data: dict, node_id: str, hops: int = 2) -> dic
 
 def trace_rbac_chains(graph_data: dict) -> list:
     """
-    Find all ServiceAccount → RoleBinding → ClusterRole chains.
-    Returns list of chains with cumulative risk.
+    Find actual ServiceAccount → Role/ClusterRole chains by following edges.
+    Only returns chains where a directed path actually exists.
     """
     nodes    = graph_data["nodes"]
     edges    = graph_data["edges"]
     node_map = {n["id"]: n for n in nodes}
 
-    service_accounts = [n for n in nodes if n["type"] == "serviceaccount"]
-    rbac_nodes       = [n for n in nodes if n["type"] == "rbac"]
+    # Build directed adjacency
+    adjacency = {n["id"]: [] for n in nodes}
+    edge_map  = {}
+    for edge in edges:
+        src = edge["source"]
+        tgt = edge["target"]
+        if src in adjacency:
+            adjacency[src].append(tgt)
+            edge_map[(src, tgt)] = edge.get("relationship", "")
 
+    service_accounts = [n for n in nodes if n["type"] == "serviceaccount"]
+    # Parser sets type="rbac" for ALL of: Role, ClusterRole, RoleBinding, ClusterRoleBinding
+    role_types = {"rbac"}
     chains = []
 
     for sa in service_accounts:
-        for rb in rbac_nodes:
-            # Check if there's a path between them via edges
-            chain_risk = sa["risk"] + rb["risk"]
-            chains.append({
-                "serviceaccount": sa["name"],
-                "serviceaccount_id": sa["id"],
-                "rbac":          rb["name"],
-                "rbac_id":       rb["id"],
-                "chain_risk":    min(chain_risk, 100),
-                "severity":      "CRITICAL" if chain_risk >= 70
-                                 else "HIGH" if chain_risk >= 40
-                                 else "MEDIUM",
-                "description":   f"{sa['name']} is bound to {rb['name']} — "
-                                 f"grants elevated cluster permissions",
-            })
+        # BFS from this SA following directed edges to find any rbac node
+        visited = {sa["id"]}
+        queue   = [(sa["id"], [sa["id"]])]
 
-    # Sort by chain risk descending
+        while queue:
+            current, path = queue.pop(0)
+            if len(path) > 5:  # max 4 hops from SA
+                continue
+            for neighbor in adjacency.get(current, []):
+                if neighbor in visited:
+                    continue
+                visited.add(neighbor)
+                nb_node = node_map.get(neighbor)
+                if not nb_node:
+                    continue
+                new_path = path + [neighbor]
+                if nb_node["type"] in role_types:
+                    # Found a real SA → RBAC chain
+                    chain_risk = sum(
+                        node_map[n].get("risk_score", node_map[n].get("risk", 0))
+                        for n in new_path if n in node_map
+                    )
+                    chains.append({
+                        "serviceaccount":    sa["name"],
+                        "serviceaccount_id": sa["id"],
+                        "rbac":              nb_node["name"],
+                        "rbac_id":           nb_node["id"],
+                        "path":              [node_map[n]["name"] for n in new_path if n in node_map],
+                        "chain_risk":        min(chain_risk, 100),
+                        "severity":          "CRITICAL" if chain_risk >= 70
+                                             else "HIGH" if chain_risk >= 40
+                                             else "MEDIUM",
+                        "description":       f"{sa['name']} → {nb_node['name']} "
+                                             f"via {len(new_path)-1} hop(s)",
+                    })
+                    # Continue BFS — SA may chain through multiple rbac nodes
+                    queue.append((neighbor, new_path))
+                else:
+                    queue.append((neighbor, new_path))
+
     chains.sort(key=lambda c: c["chain_risk"], reverse=True)
     return chains

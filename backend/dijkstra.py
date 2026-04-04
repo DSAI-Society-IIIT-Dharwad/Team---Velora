@@ -116,18 +116,10 @@ def find_all_attack_paths(G: nx.DiGraph) -> list:
 def format_path_report(results: list) -> str:
     """
     Format a list of attack path results into the kill chain report style.
-
-    Matches the exact format shown in the sample-output.txt:
-      Path #N | M hops | Risk Score: X.X [SEVERITY]
-      node-name (Type) --[relationship]--> next-node (Type) [CVE, CVSS X.X]
-      ...
-
-    Args:
-        results: List of dicts from find_all_attack_paths()
-
-    Returns:
-        Formatted multi-line string
+    Includes per-path remediation advice (Deliverable 2.3).
     """
+    from remediator import generate_remediation   # local import avoids circular
+
     if not results:
         return "  No attack paths detected.\n"
 
@@ -139,16 +131,13 @@ def format_path_report(results: list) -> str:
         )
         lines.append("  " + "─" * 60)
 
-        path  = r["path"]
-        edges = r["edges"]
-
-        for i, edge in enumerate(edges):
-            src_name  = edge["src_name"]
-            src_type  = edge["src_type"]
-            tgt_name  = edge["tgt_name"]
-            tgt_type  = edge["tgt_type"]
-            rel       = edge["relationship"]
-            cve_tag   = ""
+        for edge in r["edges"]:
+            src_name = edge["src_name"]
+            src_type = edge["src_type"]
+            tgt_name = edge["tgt_name"]
+            tgt_type = edge["tgt_type"]
+            rel      = edge["relationship"]
+            cve_tag  = ""
             if edge["cve"]:
                 cve_tag = f"  [{edge['cve']}, CVSS {edge['cvss']}]"
 
@@ -158,10 +147,13 @@ def format_path_report(results: list) -> str:
                 f"{tgt_name} ({tgt_type}){cve_tag}"
             )
 
+        # ── Remediation block (Deliverable 2.3) ──────────────────────────
+        lines.append("")
+        lines.append("  ⚙  REMEDIATION:")
+        lines.append(generate_remediation(r["edges"]))
         lines.append("")
 
     return "\n".join(lines)
-
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
 

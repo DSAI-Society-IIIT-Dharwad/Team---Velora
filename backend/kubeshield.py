@@ -68,10 +68,16 @@ examples:
         """,
     )
 
+
     p.add_argument(
         "graph_file",
         help="Path to cluster-graph.json",
     )
+    p.add_argument(
+    "--nvd",
+    action="store_true",
+    help="Fetch live CVSS scores from NIST NVD API before analysis (Bonus B2)"
+)
 
     mode = p.add_argument_group("analysis modes (pick one, or use --full-report)")
     mode.add_argument(
@@ -263,6 +269,13 @@ def main():
     # Load graph
     try:
         G = load_graph(args.graph_file)
+          # ── Bonus B2: Live CVE enrichment ─────────────────────────────────────────
+        if args.nvd:
+          from nvd import enrich_graph_with_nvd, format_nvd_report
+          print("\n[ LIVE CVE ENRICHMENT — NIST NVD API ]")
+          enrichment = enrich_graph_with_nvd(G)
+          print(format_nvd_report(enrichment))
+          print()
     except FileNotFoundError:
         print(f"ERROR: file not found: {args.graph_file}", file=sys.stderr)
         sys.exit(1)

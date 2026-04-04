@@ -13,7 +13,9 @@ Key functions:
 """
 
 import networkx as nx
-from graphparser import get_node_name
+from graphparser import get_node_name 
+from remediator import generate_cycle_remediation
+
 
 
 def find_cycles(G: nx.DiGraph) -> list:
@@ -109,6 +111,8 @@ def format_cycle_report(cycles: list) -> str:
                 f"from {first_edge['src_name']} to {first_edge['tgt_name']} "
                 f"to break this cycle."
             )
+        lines.append("  ⚙  REMEDIATION:")
+        lines.append(generate_cycle_remediation(cycle["node_names"]))
         lines.append("")
 
     return "\n".join(lines)

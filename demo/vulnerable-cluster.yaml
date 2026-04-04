@@ -1,0 +1,94 @@
+# KubeShield Demo — Deliberately Vulnerable Kubernetes Cluster
+# This is a FAKE cluster for demonstration purposes only
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: admin-sa
+  namespace: default
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: admin-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-admin
+subjects:
+  - kind: ServiceAccount
+    name: admin-sa
+    namespace: default
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: db-credentials
+  namespace: default
+type: Opaque
+data:
+  username: YWRtaW4=
+  password: c3VwZXJzZWNyZXQxMjM=
+
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: vulnerable-api
+  namespace: default
+spec:
+  hostNetwork: true
+  serviceAccountName: admin-sa
+  containers:
+    - name: api-container
+      image: nginx:latest
+      securityContext:
+        privileged: true
+      env:
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: db-credentials
+              key: password
+      volumeMounts:
+        - name: host-vol
+          mountPath: /host/etc
+  volumes:
+    - name: host-vol
+      hostPath:
+        path: /etc
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: api-service
+  namespace: default
+spec:
+  type: NodePort
+  selector:
+    app: vulnerable-api
+  ports:
+    - port: 80
+      targetPort: 80
+      nodePort: 30080
+
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: monitoring-pod
+  namespace: default
+spec:
+  containers:
+    - name: monitor
+      image: prom/prometheus:latest
+      env:
+        - name: SECRET_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: db-credentials
+              key: username

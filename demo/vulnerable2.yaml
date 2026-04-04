@@ -1,0 +1,306 @@
+# ============================================================
+# NOKIA 5G CLUSTER — VULNERABLE CONFIGURATION
+# KubeShield Test File · Team Velora · IIIT Dharwad Hackathon
+# WARNING: Intentionally vulnerable for demo purposes only
+# ============================================================
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: nokia-5g-core
+  labels:
+    environment: production
+    team: network-core
+
+---
+# ⚠️ VULNERABILITY 1: No NetworkPolicy = open lateral movement
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nokia-amf-config
+  namespace: nokia-5g-core
+data:
+  amf.conf: |
+    bind_addr=0.0.0.0
+    port=38412
+    debug_level=INFO
+    log_subscriber_data=true
+  db_host: "nokia-db-service"
+  db_port: "5432"
+  db_name: "subscriber_db"
+  # ⚠️ VULNERABILITY: Secret stored in ConfigMap (not Secret object)
+  db_password: "Nokia@5G#2024!"
+  api_key: "nk-prod-api-7f3a9b2c1d4e5f6a"
+
+---
+# ⚠️ VULNERABILITY 2: Credentials in Secret (base64 only, not encrypted)
+apiVersion: v1
+kind: Secret
+metadata:
+  name: nokia-db-credentials
+  namespace: nokia-5g-core
+type: Opaque
+data:
+  # base64("NokiaRoot#2024") = Tm9raWFSb290IzIwMjQ=
+  username: Tm9raWFSb290IzIwMjQ=
+  # base64("SuperSecret5G!Pass") = U3VwZXJTZWNyZXQ1RyFQYXNz
+  password: U3VwZXJTZWNyZXQ1RyFQYXNz
+  # base64("eyJhbGciOiJSUzI1NiJ9...") — JWT signing key
+  jwt_secret: ZXlKaGJHY2lPaUpTVXpJMU5pSjk=
+  # base64("10.45.0.0/24") — internal subscriber IP range
+  subscriber_range: MTAuNDUuMC4wLzI0
+
+---
+# ⚠️ VULNERABILITY 3: ServiceAccount with cluster-admin (wildcard RBAC)
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: nokia-amf-sa
+  namespace: nokia-5g-core
+  annotations:
+    description: "AMF pod service account — DO NOT MODIFY"
+
+---
+# ⚠️ VULNERABILITY 4: ClusterRoleBinding = wildcard across ALL namespaces
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: nokia-amf-admin-binding
+subjects:
+  - kind: ServiceAccount
+    name: nokia-amf-sa
+    namespace: nokia-5g-core
+roleRef:
+  kind: ClusterRole
+  apiGroup: rbac.authorization.k8s.io
+  name: cluster-admin  # ⚠️ Full cluster-admin = game over if compromised
+
+---
+# ⚠️ VULNERABILITY 5: Privileged pod + hostNetwork + no securityContext
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nokia-amf-deployment
+  namespace: nokia-5g-core
+  labels:
+    app: nokia-amf
+    component: 5g-core
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: nokia-amf
+  template:
+    metadata:
+      labels:
+        app: nokia-amf
+    spec:
+      serviceAccountName: nokia-amf-sa
+      hostNetwork: true       # ⚠️ VULNERABILITY: shares host network namespace
+      hostPID: true           # ⚠️ VULNERABILITY: can see all host processes
+      containers:
+        - name: amf-container
+          image: nokia/open5gs-amf:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 38412   # NGAP (N2 interface)
+            - containerPort: 9090    # metrics
+          securityContext:
+            privileged: true         # ⚠️ VULNERABILITY: full container escape possible
+            allowPrivilegeEscalation: true
+            runAsUser: 0             # ⚠️ VULNERABILITY: running as root
+          env:
+            - name: DB_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: nokia-amf-config
+                  key: db_host
+            - name: DB_PASSWORD
+              value: "Nokia@5G#2024!"  # ⚠️ VULNERABILITY: hardcoded in env
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: nokia-db-credentials
+                  key: jwt_secret
+          volumeMounts:
+            - name: host-root
+              mountPath: /host           # ⚠️ VULNERABILITY: mounts host root
+            - name: docker-sock
+              mountPath: /var/run/docker.sock  # ⚠️ VULNERABILITY: docker socket = full host takeover
+          resources: {}                  # ⚠️ VULNERABILITY: no resource limits = DoS possible
+      volumes:
+        - name: host-root
+          hostPath:
+            path: /                      # ⚠️ VULNERABILITY: full host filesystem access
+        - name: docker-sock
+          hostPath:
+            path: /var/run/docker.sock
+
+---
+# ⚠️ VULNERABILITY 6: NodePort exposes 5G core directly to internet
+apiVersion: v1
+kind: Service
+metadata:
+  name: nokia-amf-service
+  namespace: nokia-5g-core
+spec:
+  type: NodePort          # ⚠️ VULNERABILITY: should be ClusterIP + Ingress
+  selector:
+    app: nokia-amf
+  ports:
+    - name: ngap
+      port: 38412
+      targetPort: 38412
+      nodePort: 30412     # ⚠️ VULNERABILITY: publicly exposed NGAP port
+    - name: metrics
+      port: 9090
+      targetPort: 9090
+      nodePort: 30090     # ⚠️ VULNERABILITY: metrics exposed (leaks topology)
+
+---
+# ⚠️ VULNERABILITY 7: UPF with privileged + host network (data plane)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nokia-upf-deployment
+  namespace: nokia-5g-core
+  labels:
+    app: nokia-upf
+    component: 5g-user-plane
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: nokia-upf
+  template:
+    metadata:
+      labels:
+        app: nokia-upf
+    spec:
+      serviceAccountName: nokia-amf-sa   # ⚠️ VULNERABILITY: reusing over-privileged SA
+      hostNetwork: true
+      containers:
+        - name: upf-container
+          image: nokia/open5gs-upf:latest
+          securityContext:
+            privileged: true
+            capabilities:
+              add: ["NET_ADMIN", "SYS_ADMIN", "SYS_PTRACE"]  # ⚠️ dangerous caps
+          env:
+            - name: SUBSCRIBER_RANGE
+              valueFrom:
+                secretKeyRef:
+                  name: nokia-db-credentials
+                  key: subscriber_range
+          resources: {}
+
+---
+# ⚠️ VULNERABILITY 8: Database exposed inside cluster with weak auth
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nokia-subscriber-db
+  namespace: nokia-5g-core
+  labels:
+    app: subscriber-db
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: subscriber-db
+  template:
+    metadata:
+      labels:
+        app: subscriber-db
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:14
+          env:
+            - name: POSTGRES_USER
+              value: "nokiaroot"              # ⚠️ VULNERABILITY: hardcoded superuser
+            - name: POSTGRES_PASSWORD
+              value: "Nokia@5G#2024!"        # ⚠️ VULNERABILITY: hardcoded password
+            - name: POSTGRES_DB
+              value: "subscriber_db"
+          ports:
+            - containerPort: 5432
+          # ⚠️ VULNERABILITY: no readOnlyRootFilesystem, no runAsNonRoot
+          resources: {}                      # ⚠️ no limits
+
+---
+# Exposes DB inside cluster (reachable from any pod = lateral movement)
+apiVersion: v1
+kind: Service
+metadata:
+  name: nokia-db-service
+  namespace: nokia-5g-core
+spec:
+  type: ClusterIP
+  selector:
+    app: subscriber-db
+  ports:
+    - port: 5432
+      targetPort: 5432
+      # ⚠️ VULNERABILITY: no NetworkPolicy restricting which pods can reach this
+
+---
+# ⚠️ VULNERABILITY 9: Dashboard exposed via NodePort with no auth
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nokia-ops-dashboard
+  namespace: nokia-5g-core
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ops-dashboard
+  template:
+    metadata:
+      labels:
+        app: ops-dashboard
+    spec:
+      serviceAccountName: nokia-amf-sa  # ⚠️ reusing cluster-admin SA again
+      containers:
+        - name: dashboard
+          image: kubernetesui/dashboard:v2.7.0
+          ports:
+            - containerPort: 8443
+          args:
+            - --enable-skip-login        # ⚠️ VULNERABILITY: skips authentication
+            - --disable-settings-authorizer
+            - --insecure-bind-address=0.0.0.0
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nokia-dashboard-service
+  namespace: nokia-5g-core
+spec:
+  type: NodePort
+  selector:
+    app: ops-dashboard
+  ports:
+    - port: 8443
+      targetPort: 8443
+      nodePort: 30443    # ⚠️ VULNERABILITY: K8s dashboard on public NodePort
+
+---
+# ⚠️ VULNERABILITY 10: Missing NetworkPolicy (nothing blocks lateral movement)
+# The following NetworkPolicy is commented out — meaning ALL pods can talk to ALL pods
+#
+# apiVersion: networking.k8s.io/v1
+# kind: NetworkPolicy
+# metadata:
+#   name: deny-all-default
+#   namespace: nokia-5g-core
+# spec:
+#   podSelector: {}
+#   policyTypes:
+#     - Ingress
+#     - Egress
+```
+
+---

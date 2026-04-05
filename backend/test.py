@@ -1,7 +1,19 @@
-import re, yaml
+"""
+test.py
+-------
+Quick smoke test for the YAML parser.
+Run from the backend/ directory:
+  python test.py
+"""
+import re
+import yaml
+import os
 
-# Simulate exactly what FastAPI sends to parser
-with open('C:/Users/Nandita/kubeshield/demo/vulnerable2.yaml', 'rb') as f:
+# Use a path relative to this file — works on any machine
+DEMO_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'demo')
+YAML_FILE = os.path.join(DEMO_DIR, 'vulnerable2.yaml')
+
+with open(YAML_FILE, 'rb') as f:
     content = f.read()
 
 print(f"File size: {len(content)} bytes")
@@ -19,29 +31,8 @@ for chunk in chunks:
         for doc in docs:
             if doc and isinstance(doc, dict) and "kind" in doc:
                 all_docs.append(doc)
-                print(f"  ✅ kind={doc.get('kind')} name={doc.get('metadata',{}).get('name')}")
+                print(f"  kind={doc.get('kind')} name={doc.get('metadata',{}).get('name')}")
     except Exception as e:
-        print(f"  ❌ ERROR: {e}")
+        print(f"  ERROR: {e}")
 
 print(f"\nTotal docs: {len(all_docs)}")
-
-# Now simulate scoring
-for doc in all_docs:
-    kind = doc.get('kind')
-    name = doc.get('metadata', {}).get('name')
-    spec = doc.get('spec', {}) or {}
-    if kind in ['Deployment', 'Pod', 'DaemonSet']:
-        if kind != 'Pod':
-            spec = spec.get('template', {}).get('spec', {}) or {}
-        print(f"\n{kind}/{name}:")
-        print(f"  hostNetwork: {spec.get('hostNetwork')}")
-        print(f"  hostPID: {spec.get('hostPID')}")
-        containers = (spec.get('containers', []) or []) + (spec.get('initContainers', []) or [])
-        print(f"  containers: {len(containers)}")
-        for c in containers:
-            if isinstance(c, dict):
-                sc = c.get('securityContext', {}) or {}
-                print(f"    container: {c.get('name')} privileged={sc.get('privileged')} runAsUser={sc.get('runAsUser')}")
-                vols = c.get('volumeMounts', []) or []
-                for v in vols:
-                    print(f"      volumeMount: {v.get('mountPath')}")
